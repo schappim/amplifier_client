@@ -14,15 +14,15 @@ send follow-up prompts, and interrupt or stop it.
 ## Install
 
 ```bash
-brew install schappim/tap/exponential-agent
+brew install schappim/tap/amplifier-agent
 ```
 
 Then, with the token from the app (**Claude Code** or **Codex** in the sidebar →
 your machine → **Show token & setup**):
 
 ```bash
-exponential-agent setup --url https://amplifier.app --token paste-your-token-here
-exponential-agent
+amplifier-agent setup --url https://amplifier.app --token paste-your-token-here
+amplifier-agent
 ```
 
 The machine's dot turns green in the app once it connects. Now start a session
@@ -32,7 +32,7 @@ directory, and a first prompt, and watch it stream.
 To keep it running after you close the terminal:
 
 ```bash
-brew services start exponential-agent
+brew services start amplifier-agent
 ```
 
 ### Requirements
@@ -53,7 +53,7 @@ Node 18+ and a clone are enough:
 ```bash
 git clone https://github.com/schappim/amplifier_client.git
 cd amplifier_client && npm install
-EXPONENTIAL_URL=https://amplifier.app AGENT_TOKEN=paste-your-token-here node exponential-agent.mjs
+AMPLIFIER_URL=https://amplifier.app AGENT_TOKEN=paste-your-token-here node amplifier-agent.mjs
 ```
 
 ## How it works
@@ -90,15 +90,15 @@ Chosen per session when you start it:
 
 ## Configuration
 
-`setup` writes `~/.config/exponential-agent/config.json` (mode 0600, in
+`setup` writes `~/.config/amplifier-agent/config.json` (mode 0600, in
 `$XDG_CONFIG_HOME` if you set one). Environment variables override it, so you can
 point a one-off run at a different app without disturbing the saved config:
 
-| Variable          | Default                 | Description                                     |
-| ----------------- | ----------------------- | ----------------------------------------------- |
-| `AGENT_TOKEN`     | _(required)_            | Connector token from the app.                   |
-| `EXPONENTIAL_URL` | `https://amplifier.app` | Base URL of the app.                            |
-| `AGENT_NAME`      | this machine's hostname | Name the machine registers as.                  |
+| Variable        | Default                 | Description                                               |
+| --------------- | ----------------------- | --------------------------------------------------------- |
+| `AGENT_TOKEN`   | _(required)_            | Connector token from the app.                             |
+| `AMPLIFIER_URL` | `https://amplifier.app` | Base URL of the app. `EXPONENTIAL_URL` is still honoured. |
+| `AGENT_NAME`    | this machine's hostname | Name the machine registers as.                            |
 
 ## Security
 
@@ -124,7 +124,7 @@ accordingly:
   permission the first time a session touches Desktop, Documents, or Downloads;
   if a session mysteriously can't read files there, grant Full Disk Access to the
   agent, or run it in a terminal instead.
-- `exponential-agent --help` lists everything the binary accepts.
+- `amplifier-agent --help` lists everything the binary accepts.
 
 ## Development
 

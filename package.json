@@ -1,5 +1,5 @@
 {
-  "name": "exponential-agent",
+  "name": "amplifier-agent",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -11,10 +11,10 @@
   },
   "license": "MIT",
   "bin": {
-    "exponential-agent": "./exponential-agent.mjs"
+    "amplifier-agent": "./amplifier-agent.mjs"
   },
   "scripts": {
-    "start": "node exponential-agent.mjs"
+    "start": "node amplifier-agent.mjs"
   },
   "engines": {
     "node": ">=18"

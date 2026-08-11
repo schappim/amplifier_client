@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Exponential ⇄ Claude Code / Codex SESSION AGENT.
+// Amplifier ⇄ Claude Code / Codex SESSION AGENT.
 //
 // Runs on your own machine and lets you drive Claude Code or Codex sessions from the
-// Exponential web app — like having the terminal in your browser. It:
+// Amplifier web app — like having the terminal in your browser. It:
 //
 //   1. registers with the app using its connector token,
 //   2. long-polls `/agent/poll` for commands (start / prompt / interrupt / stop /
@@ -23,9 +23,9 @@
 // the local Codex CLI login or CODEX_API_KEY via @openai/codex-sdk.
 //
 // Env (each also readable from the config file written by `setup`, below):
-//   EXPONENTIAL_URL   Base URL of the app         (default https://amplifier.app)
-//   AGENT_TOKEN       Connector token             (required — from the Sessions page)
-//   AGENT_NAME        Name to register as         (default: this machine's hostname)
+//   AMPLIFIER_URL   Base URL of the app   (default https://amplifier.app)
+//   AGENT_TOKEN     Connector token       (required — from the Sessions page)
+//   AGENT_NAME      Name to register as   (default: this machine's hostname)
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { Codex } from "@openai/codex-sdk";
@@ -41,16 +41,21 @@ const VERSION = "1.0.0";
 // Env vars are the whole story when you run this by hand. Installed copies (brew,
 // and especially `brew services`, whose launchd job inherits none of your shell)
 // have nowhere to put them, so `setup` writes them to a file instead. Env still
-// wins where both are set, so a one-off `AGENT_TOKEN=… exponential-agent` can
+// wins where both are set, so a one-off `AGENT_TOKEN=… amplifier-agent` can
 // point an installed agent at a different workspace without disturbing the file.
 
-const CONFIG_DIR = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "exponential-agent");
+const CONFIG_DIR = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "amplifier-agent");
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 
 // Where the agent points when nothing says otherwise. Working against a local app
 // is the exception now that this ships to other people, so it costs one env var:
-// EXPONENTIAL_URL=http://localhost:5001.
+// AMPLIFIER_URL=http://localhost:5001.
 const PRODUCTION_URL = "https://amplifier.app";
+
+// EXPONENTIAL_URL is what this variable used to be called, and it is still baked
+// into shell history, tmux panes and dev scripts. Keep honouring it so a rename
+// of the binary doesn't quietly redirect a running dev agent at production.
+const APP_URL_ENV = process.env.AMPLIFIER_URL || process.env.EXPONENTIAL_URL || "";
 
 function readConfig() {
   try {
@@ -59,7 +64,7 @@ function readConfig() {
   } catch (err) {
     // A missing file is the normal case for env-var users; anything else (bad
     // JSON, unreadable) is worth saying out loud rather than silently ignoring.
-    if (err?.code !== "ENOENT") console.error(`[exponential-agent] ignoring ${CONFIG_PATH}: ${err.message}`);
+    if (err?.code !== "ENOENT") console.error(`[amplifier-agent] ignoring ${CONFIG_PATH}: ${err.message}`);
     return {};
   }
 }
@@ -75,13 +80,13 @@ function runSetup(argv) {
   }
   const token = flags.token || process.env.AGENT_TOKEN || "";
   if (!token) {
-    console.error("Usage: exponential-agent setup --url https://your-app.example --token <connector token>");
+    console.error("Usage: amplifier-agent setup --url https://your-app.example --token <connector token>");
     console.error("Copy both from the app: Claude Code (sidebar) → your machine → Show token & setup.");
     process.exit(1);
   }
   const existing = readConfig();
   const config = {
-    url: (flags.url || process.env.EXPONENTIAL_URL || existing.url || PRODUCTION_URL).replace(/\/+$/, ""),
+    url: (flags.url || APP_URL_ENV || existing.url || PRODUCTION_URL).replace(/\/+$/, ""),
     token,
     name: flags.name || process.env.AGENT_NAME || existing.name || hostname(),
   };
@@ -93,8 +98,8 @@ function runSetup(argv) {
   chmodSync(CONFIG_PATH, 0o600); // writeFileSync's mode is ignored when the file already exists
   console.log(`Saved ${CONFIG_PATH} (machine “${config.name}” → ${config.url}).`);
   console.log("");
-  console.log("Start it now:      exponential-agent");
-  console.log("Or run at login:   brew services start exponential-agent");
+  console.log("Start it now:      amplifier-agent");
+  console.log("Or run at login:   brew services start amplifier-agent");
   process.exit(0);
 }
 
@@ -106,19 +111,19 @@ if (process.argv[2] === "--version" || process.argv[2] === "-v") {
 }
 
 if (process.argv[2] === "--help" || process.argv[2] === "-h") {
-  console.log(`exponential-agent ${VERSION} — runs Claude Code / Codex sessions driven from the app.
+  console.log(`amplifier-agent ${VERSION} — runs Claude Code / Codex sessions driven from the app.
 
-  exponential-agent                    Connect and wait for sessions
-  exponential-agent setup --url URL --token TOKEN [--name NAME]
-                                       Save credentials to ${CONFIG_PATH}
-  exponential-agent --version
+  amplifier-agent                     Connect and wait for sessions
+  amplifier-agent setup --url URL --token TOKEN [--name NAME]
+                                      Save credentials to ${CONFIG_PATH}
+  amplifier-agent --version           Print the version
 
-Env (overrides the config file): EXPONENTIAL_URL, AGENT_TOKEN, AGENT_NAME`);
+Env (overrides the config file): AMPLIFIER_URL, AGENT_TOKEN, AGENT_NAME`);
   process.exit(0);
 }
 
 const config = readConfig();
-const EXPONENTIAL_URL = (process.env.EXPONENTIAL_URL || config.url || PRODUCTION_URL).replace(/\/+$/, "");
+const AMPLIFIER_URL = (APP_URL_ENV || config.url || PRODUCTION_URL).replace(/\/+$/, "");
 const AGENT_TOKEN = process.env.AGENT_TOKEN || config.token || "";
 const AGENT_NAME = process.env.AGENT_NAME || config.name || hostname();
 
@@ -133,21 +138,21 @@ const MAX_TEXT = 8000;
 const INIT_TIMEOUT_MS = 120000;
 
 if (!AGENT_TOKEN) {
-  console.error("[exponential-agent] AGENT_TOKEN is required — copy it from the app's Claude Code Sessions page (Add machine).");
-  console.error(`[exponential-agent] Save it once with: exponential-agent setup --url ${EXPONENTIAL_URL} --token <token>`);
+  console.error("[amplifier-agent] AGENT_TOKEN is required — copy it from the app's Claude Code Sessions page (Add machine).");
+  console.error(`[amplifier-agent] Save it once with: amplifier-agent setup --url ${AMPLIFIER_URL} --token <token>`);
   process.exit(1);
 }
 
 // --- HTTP to the app ---------------------------------------------------------
 
 async function api(path, { method = "GET", body } = {}) {
-  const res = await fetch(`${EXPONENTIAL_URL}${path}`, {
+  const res = await fetch(`${AMPLIFIER_URL}${path}`, {
     method,
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${AGENT_TOKEN}` },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (res.status === 401) {
-    console.error("[exponential-agent] Unauthorized — check AGENT_TOKEN matches a machine in the app.");
+    console.error("[amplifier-agent] Unauthorized — check AGENT_TOKEN matches a machine in the app.");
     process.exit(1);
   }
   return res;
@@ -193,7 +198,7 @@ async function flushOutbox() {
       // retrying can't help, so log and drop it. 5xx / network errors are
       // transient: throw to fall into the retry-with-backoff path below.
       if (!res.ok && res.status < 500) {
-        console.error(`[exponential-agent] POST ${item.path} dropped: HTTP ${res.status}`);
+        console.error(`[amplifier-agent] POST ${item.path} dropped: HTTP ${res.status}`);
       } else if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
@@ -204,12 +209,12 @@ async function flushOutbox() {
         // Given up: this one item can't be delivered, but the rest of the queue
         // (every other session's events/status on this machine) must not stay
         // wedged behind it forever.
-        console.error(`[exponential-agent] POST ${item.path} giving up after ${item.attempts} attempts, dropping: ${err.message}`);
+        console.error(`[amplifier-agent] POST ${item.path} giving up after ${item.attempts} attempts, dropping: ${err.message}`);
         outbox.shift();
         continue;
       }
       const backoff = Math.min(1000 * item.attempts, 10000);
-      console.error(`[exponential-agent] POST ${item.path} failed (attempt ${item.attempts}), retrying in ${backoff}ms: ${err.message}`);
+      console.error(`[amplifier-agent] POST ${item.path} failed (attempt ${item.attempts}), retrying in ${backoff}ms: ${err.message}`);
       await sleep(backoff); // leave the item at the head and loop to retry it
     }
   }
@@ -758,7 +763,7 @@ async function finishWithError(runner, err) {
   if (runner.errored) return; // idempotent — the init timeout and the drain loop can both fire
   runner.errored = true;
   clearTimeout(runner.initTimer);
-  console.error(`[exponential-agent] session ${runner.sessionId} error: ${err?.message}`);
+  console.error(`[amplifier-agent] session ${runner.sessionId} error: ${err?.message}`);
   await sendEvents(runner.sessionId, [{ kind: "error", text: String(err?.message || err) }]);
   await sendStatus(runner.sessionId, { status: "error", error: String(err?.message || err) });
   sessions.delete(runner.sessionId);
@@ -827,14 +832,14 @@ async function handleCommand(cmd) {
       // is already persisted app-side and rides the next resume's payload.
       if (runner?.provider !== "codex") {
         try { await runner?.query?.setPermissionMode(cmd.payload?.permission_mode || "default"); }
-        catch (e) { console.error(`[exponential-agent] setPermissionMode failed: ${e?.message || e}`); }
+        catch (e) { console.error(`[amplifier-agent] setPermissionMode failed: ${e?.message || e}`); }
       } else if (runner?.thread?.id) {
         runner.optionsPayload = { ...runner.optionsPayload, permission_mode: cmd.payload?.permission_mode || "default" };
         runner.thread = codex.resumeThread(runner.thread.id, codexThreadOptions({ ...runner.optionsPayload, resume: runner.thread.id }));
       }
       break;
     default:
-      console.error(`[exponential-agent] unknown command: ${cmd.kind}`);
+      console.error(`[amplifier-agent] unknown command: ${cmd.kind}`);
   }
 }
 
@@ -855,7 +860,7 @@ async function fetchClaudeStatus() {
     const account = await probe.accountInfo();
     return account && Object.keys(account).length ? account : null;
   } catch (err) {
-    console.error(`[exponential-agent] couldn't read Claude Code status: ${err?.message || err}`);
+    console.error(`[amplifier-agent] couldn't read Claude Code status: ${err?.message || err}`);
     return null;
   } finally {
     input.close();
@@ -872,10 +877,10 @@ async function register() {
     const info = await res.json().catch(() => ({}));
     updateAmplifierMcp(info.mcp);
     const who = claude?.subscriptionType ? ` — Claude ${claude.subscriptionType} subscription${claude.email ? ` (${claude.email})` : ""}` : "";
-    console.error(`[exponential-agent] registered as “${AGENT_NAME}” on ${EXPONENTIAL_URL}` + (info.account ? ` (workspace: ${info.account})` : "") + who);
-    console.error(`[exponential-agent] Amplifier MCP ${amplifierMcp ? `enabled (${amplifierMcp.url})` : "not available from register response"}`);
+    console.error(`[amplifier-agent] registered as “${AGENT_NAME}” on ${AMPLIFIER_URL}` + (info.account ? ` (workspace: ${info.account})` : "") + who);
+    console.error(`[amplifier-agent] Amplifier MCP ${amplifierMcp ? `enabled (${amplifierMcp.url})` : "not available from register response"}`);
   } else {
-    console.error(`[exponential-agent] register failed: HTTP ${res.status}`);
+    console.error(`[amplifier-agent] register failed: HTTP ${res.status}`);
   }
 }
 
@@ -895,7 +900,7 @@ async function refreshStatus() {
 const launchRank = (cmd) => (cmd?.kind === "start" || cmd?.kind === "resume" ? 0 : 1);
 
 async function pollLoop() {
-  console.error("[exponential-agent] waiting for sessions… start one from the app's Claude Code Sessions page.");
+  console.error("[amplifier-agent] waiting for sessions… start one from the app's Claude Code Sessions page.");
   while (true) {
     try {
       // Report the sessions we currently hold live so the app can reconcile: any
@@ -915,7 +920,7 @@ async function pollLoop() {
       const ordered = [...commands].sort((a, b) => launchRank(a) - launchRank(b));
       for (const cmd of ordered) await handleCommand(cmd);
     } catch (err) {
-      console.error(`[exponential-agent] poll error: ${err.message} — retrying`);
+      console.error(`[amplifier-agent] poll error: ${err.message} — retrying`);
       await sleep(2000);
     }
   }
@@ -923,9 +928,9 @@ async function pollLoop() {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-process.on("SIGINT", () => { console.error("\n[exponential-agent] shutting down"); process.exit(0); });
-process.on("uncaughtException", (err) => console.error("[exponential-agent] uncaught:", err?.message));
-process.on("unhandledRejection", (err) => console.error("[exponential-agent] rejection:", err?.message));
+process.on("SIGINT", () => { console.error("\n[amplifier-agent] shutting down"); process.exit(0); });
+process.on("uncaughtException", (err) => console.error("[amplifier-agent] uncaught:", err?.message));
+process.on("unhandledRejection", (err) => console.error("[amplifier-agent] rejection:", err?.message));
 
 await register();
 setInterval(() => { refreshStatus().catch(() => {}); }, REFRESH_STATUS_MS).unref?.();
