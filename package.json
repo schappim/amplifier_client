@@ -1,0 +1,26 @@
+{
+  "name": "exponential-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runs and remote-controls Claude Code and Codex sessions on this machine, driven from the Amplifier web app.",
+  "homepage": "https://github.com/schappim/amplifier_client",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/schappim/amplifier_client.git"
+  },
+  "license": "MIT",
+  "bin": {
+    "exponential-agent": "./exponential-agent.mjs"
+  },
+  "scripts": {
+    "start": "node exponential-agent.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.199",
+    "@openai/codex-sdk": "^0.144.5"
+  }
+}
