@@ -39,10 +39,18 @@ brew services start amplifier-agent
 
 - **macOS or Linux** with [Homebrew](https://brew.sh). Node 18+ is installed for
   you as a dependency.
-- **A Claude Code login on this machine.** Run `claude` once and sign in before
-  starting a session. Sessions run on your Claude subscription (Pro/Max), never
-  on API billing — the agent strips every API-credential environment variable and
-  pins the login method before it launches Claude Code.
+- **A Claude Code login on this machine.** Claude Code is a separate program from
+  this agent; if you don't have it yet:
+
+  ```bash
+  brew install --cask claude-code && claude
+  ```
+
+  Sign in once, and the Sessions page will show which account the machine is
+  using. Until you do, the app marks the machine "Claude Code isn't signed in"
+  and Claude sessions will fail. Sessions run on your Claude subscription
+  (Pro/Max), never on API billing — the agent strips every API-credential
+  environment variable and pins the login method before it launches Claude Code.
 - **For Codex sessions**, a Codex CLI login on this machine or `CODEX_API_KEY`
   set in the environment.
 
@@ -120,10 +128,14 @@ accordingly:
 - Sessions resume: the SDK session id is saved, so the app can continue a prior
   session across restarts.
 - Tool output is capped per event, so a huge file read can't flood the transcript.
-- Under `brew services` the agent runs as a launchd user agent. macOS may ask for
-  permission the first time a session touches Desktop, Documents, or Downloads;
-  if a session mysteriously can't read files there, grant Full Disk Access to the
-  agent, or run it in a terminal instead.
+- Under `brew services` the agent runs as a launchd user agent and logs to
+  `$(brew --prefix)/var/log/amplifier-agent.log` — start there when something
+  isn't working. macOS may also ask for permission the first time a session
+  touches Desktop, Documents, or Downloads; if a session mysteriously can't read
+  files there, grant Full Disk Access to the agent, or run it in a terminal.
+- Working directories are paths on **this** machine. `~` is expanded for you, and
+  a directory that doesn't exist is reported as such rather than being handed to
+  the SDK.
 - `amplifier-agent --help` lists everything the binary accepts.
 
 ## Development
