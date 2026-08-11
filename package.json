@@ -1,6 +1,6 @@
 {
   "name": "amplifier-agent",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "description": "Runs and remote-controls Claude Code and Codex sessions on this machine, driven from the Amplifier web app.",

@@ -31,10 +31,10 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { Codex } from "@openai/codex-sdk";
 import { homedir, hostname, platform } from "node:os";
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const VERSION = "1.0.0";
+const VERSION = "1.0.1";
 
 // --- Configuration -----------------------------------------------------------
 //
@@ -120,6 +120,26 @@ if (process.argv[2] === "--help" || process.argv[2] === "-h") {
 
 Env (overrides the config file): AMPLIFIER_URL, AGENT_TOKEN, AGENT_NAME`);
   process.exit(0);
+}
+
+// The working directory is free text typed in the browser, on a machine the
+// person typing may not be sitting at. Two things go wrong constantly: they type
+// `~/code/thing` (a shell convention — nothing expands it here), or they get the
+// path slightly wrong. Both reach the SDK as a chdir that fails, and the SDK
+// reports that as a libc/architecture mismatch, so the browser ends up telling
+// someone on a Mac that their Linux dynamic loader is missing. Resolve and check
+// it here, where we still know what actually happened.
+function resolveWorkingDirectory(raw) {
+  if (!raw) return process.cwd();
+  const expanded = raw === "~" || raw.startsWith("~/") ? join(homedir(), raw.slice(1)) : raw;
+  let stat;
+  try {
+    stat = statSync(expanded);
+  } catch {
+    throw new Error(`Working directory “${raw}” doesn't exist on ${AGENT_NAME}.`);
+  }
+  if (!stat.isDirectory()) throw new Error(`Working directory “${raw}” is a file, not a directory, on ${AGENT_NAME}.`);
+  return expanded;
 }
 
 const config = readConfig();
@@ -382,10 +402,20 @@ function startClaudeSession(cmd) {
 
   if (hasPrompt) input.push(promptWithImages(p.prompt, p));
 
+  let cwd;
+  try {
+    cwd = resolveWorkingDirectory(p.cwd);
+  } catch (err) {
+    // Not awaited on purpose: startSession stays synchronous so the runner is
+    // registered before a prompt delivered in the same poll batch looks for it.
+    finishWithError(runner, err).catch(() => {});
+    return;
+  }
+
   const permissionMode = p.permission_mode || "default";
   const options = {
     ...subscriptionOnlyOptions(),
-    cwd: p.cwd || process.cwd(),
+    cwd,
     permissionMode,
     abortController: abort,
     mcpServers: claudeMcpServers(),
@@ -440,7 +470,7 @@ function resumeSession(cmd) {
 function codexThreadOptions(payload = {}) {
   const mode = payload.permission_mode || "default";
   const options = {
-    workingDirectory: payload.cwd || process.cwd(),
+    workingDirectory: resolveWorkingDirectory(payload.cwd),
     skipGitRepoCheck: true,
     approvalPolicy: "never",
   };
@@ -468,8 +498,18 @@ function startCodexSession(cmd) {
   if (sessions.has(sessionId)) return;
 
   const p = cmd.payload || {};
+  let options;
+  try {
+    options = codexThreadOptions(p);
+  } catch (err) {
+    // No runner exists yet, so hand finishWithError a stand-in: without this the
+    // throw escapes to the poll loop, which logs it as a generic poll error and
+    // leaves the session pending in the app forever with nothing to explain it.
+    finishWithError({ sessionId }, err).catch(() => {});
+    return;
+  }
   const codex = codexRunner();
-  const thread = p.resume ? codex.resumeThread(p.resume, codexThreadOptions(p)) : codex.startThread(codexThreadOptions(p));
+  const thread = p.resume ? codex.resumeThread(p.resume, options) : codex.startThread(options);
   const runner = {
     provider: "codex",
     sessionId,
@@ -835,7 +875,13 @@ async function handleCommand(cmd) {
         catch (e) { console.error(`[amplifier-agent] setPermissionMode failed: ${e?.message || e}`); }
       } else if (runner?.thread?.id) {
         runner.optionsPayload = { ...runner.optionsPayload, permission_mode: cmd.payload?.permission_mode || "default" };
-        runner.thread = codex.resumeThread(runner.thread.id, codexThreadOptions({ ...runner.optionsPayload, resume: runner.thread.id }));
+        // The working directory can have gone away since the session started;
+        // a mode switch shouldn't take the poll loop down with it.
+        try {
+          runner.thread = codex.resumeThread(runner.thread.id, codexThreadOptions({ ...runner.optionsPayload, resume: runner.thread.id }));
+        } catch (e) {
+          await finishWithError(runner, e);
+        }
       }
       break;
     default:
@@ -879,8 +925,33 @@ async function register() {
     const who = claude?.subscriptionType ? ` — Claude ${claude.subscriptionType} subscription${claude.email ? ` (${claude.email})` : ""}` : "";
     console.error(`[amplifier-agent] registered as “${AGENT_NAME}” on ${AMPLIFIER_URL}` + (info.account ? ` (workspace: ${info.account})` : "") + who);
     console.error(`[amplifier-agent] Amplifier MCP ${amplifierMcp ? `enabled (${amplifierMcp.url})` : "not available from register response"}`);
+    // Sessions need a logged-in Claude Code, and a machine that has never had
+    // `claude` run on it registers looking perfectly healthy. Say it here, where
+    // someone is watching, instead of letting the first session fail obscurely.
+    if (claude && claude.tokenSource === "none") {
+      console.error("[amplifier-agent] Claude Code is not signed in on this machine — run `claude` and log in, or Claude sessions will fail.");
+    }
   } else {
     console.error(`[amplifier-agent] register failed: HTTP ${res.status}`);
+  }
+}
+
+// The app being unreachable at startup is ordinary: a laptop that woke before
+// the network, a restarting app, hotel wifi. Letting the fetch rejection reach
+// top level exits the process — and, because an `uncaughtException` handler
+// swallows it, exits *zero*, so `brew services` reports a healthy service while
+// relaunching it every 10 seconds forever. Retry in-process instead, naming the
+// URL each time so a genuinely wrong one is obvious in the log.
+async function registerWithRetry() {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await register();
+      return;
+    } catch (err) {
+      const wait = Math.min(30000, 2000 * 2 ** Math.min(attempt, 4));
+      console.error(`[amplifier-agent] can't reach ${AMPLIFIER_URL} (${err?.message || err}) — retrying in ${wait / 1000}s`);
+      await sleep(wait);
+    }
   }
 }
 
@@ -929,9 +1000,18 @@ async function pollLoop() {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 process.on("SIGINT", () => { console.error("\n[amplifier-agent] shutting down"); process.exit(0); });
-process.on("uncaughtException", (err) => console.error("[amplifier-agent] uncaught:", err?.message));
-process.on("unhandledRejection", (err) => console.error("[amplifier-agent] rejection:", err?.message));
+// These keep a stray error in one session from taking the whole agent down, but
+// they must not turn a fatal startup failure into a silent exit(0) — launchd and
+// `brew services list` read the status, and a zero there means "finished fine".
+process.on("uncaughtException", (err) => {
+  console.error("[amplifier-agent] uncaught:", err?.message);
+  process.exitCode = 1;
+});
+process.on("unhandledRejection", (err) => {
+  console.error("[amplifier-agent] rejection:", err?.message);
+  process.exitCode = 1;
+});
 
-await register();
+await registerWithRetry();
 setInterval(() => { refreshStatus().catch(() => {}); }, REFRESH_STATUS_MS).unref?.();
 await pollLoop();
