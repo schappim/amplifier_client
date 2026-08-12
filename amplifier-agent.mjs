@@ -31,10 +31,13 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { Codex } from "@openai/codex-sdk";
 import { homedir, hostname, platform } from "node:os";
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
+import { promisify } from "node:util";
 
-const VERSION = "1.0.1";
+const VERSION = "1.1.0";
 
 // --- Configuration -----------------------------------------------------------
 //
@@ -257,6 +260,10 @@ const truncate = (s) => {
 const sessions = new Map(); // sessionId -> runner
 let amplifierMcp = null;
 let codexClient = null;
+// The Codex CLI's model catalog for this machine (see fetchCodexModels), kept so
+// a launch can clamp its effort to what the chosen model supports without
+// shelling out mid-launch. Refreshed on every status report.
+let codexCatalog = null;
 
 function makeInputQueue() {
   const items = [];
@@ -467,6 +474,16 @@ function resumeSession(cmd) {
   startSession({ ...cmd, payload: { ...p, resume: p.sdk_session_id } });
 }
 
+// Reasoning levels differ per model — the newest take "max"/"ultra", older ones
+// stop at "xhigh" — so clamp a session's effort to the highest level the chosen
+// model actually supports (the catalog lists them low→highest). Unknown model or
+// no catalog: pass it straight through and let Codex have the last word.
+function codexEffortFor(model, effort) {
+  const efforts = codexCatalog?.models?.find((m) => m.slug === model)?.efforts || [];
+  if (!efforts.length || efforts.includes(effort)) return effort;
+  return efforts[efforts.length - 1];
+}
+
 function codexThreadOptions(payload = {}) {
   const mode = payload.permission_mode || "default";
   const options = {
@@ -475,7 +492,7 @@ function codexThreadOptions(payload = {}) {
     approvalPolicy: "never",
   };
   if (payload.model) options.model = payload.model;
-  if (payload.effort) options.modelReasoningEffort = payload.effort === "max" ? "xhigh" : payload.effort;
+  if (payload.effort) options.modelReasoningEffort = codexEffortFor(payload.model, payload.effort);
 
   switch (mode) {
     case "plan":
@@ -914,11 +931,79 @@ async function fetchClaudeStatus() {
   }
 }
 
+// --- Codex model catalog -----------------------------------------------------
+// Which models (and reasoning efforts) Codex sessions can actually use is a
+// property of the Codex CLI on THIS machine, not of the app — so read the CLI's
+// own catalog and report it, rather than the app keeping a list that rots every
+// time OpenAI ships a model. Reported on register and on each hourly refresh, so
+// upgrading Codex here updates the app's dropdowns without an app deploy.
+const execFileAsync = promisify(execFile);
+const moduleRequire = createRequire(import.meta.url);
+const CODEX_CLI_TIMEOUT_MS = 30000;
+
+// The Codex CLI to ask. Prefer the one the SDK already depends on (resolved from
+// this agent's own node_modules, so it matches the binary that runs sessions and
+// needs nothing on PATH); fall back to a `codex` the user installed themselves.
+function codexCliCommand() {
+  try {
+    return [process.execPath, [moduleRequire.resolve("@openai/codex/bin/codex.js")]];
+  } catch {
+    return ["codex", []];
+  }
+}
+
+async function runCodexCli(args) {
+  const [bin, prefix] = codexCliCommand();
+  const { stdout } = await execFileAsync(bin, [...prefix, ...args], {
+    env: codexEnv(),
+    timeout: CODEX_CLI_TIMEOUT_MS,
+    maxBuffer: 64 * 1024 * 1024, // the catalog carries each model's base instructions
+  });
+  return stdout;
+}
+
+// Keep only what the launcher needs: the whole catalog is megabytes of per-model
+// system prompts, and the app has no use for them.
+function trimCodexModel(model) {
+  return {
+    slug: model.slug,
+    display_name: model.display_name || model.slug,
+    visibility: model.visibility,
+    supported_in_api: model.supported_in_api,
+    priority: model.priority,
+    default_effort: model.default_reasoning_level || null,
+    efforts: (model.supported_reasoning_levels || []).map((level) => level?.effort).filter(Boolean),
+  };
+}
+
+async function fetchCodexModels() {
+  try {
+    const parsed = JSON.parse(await runCodexCli(["debug", "models"]));
+    const models = (parsed?.models || []).filter((model) => model?.slug).map(trimCodexModel);
+    if (!models.length) return null;
+    return { version: await codexCliVersion(), models };
+  } catch (err) {
+    // An older CLI without `debug models`, no login, or no network: the app keeps
+    // the last catalog this machine reported, so say it once and move on.
+    console.error(`[amplifier-agent] couldn't read the Codex model catalog: ${err?.message || err}`);
+    return null;
+  }
+}
+
+async function codexCliVersion() {
+  try {
+    return (await runCodexCli(["--version"])).trim().split(/\s+/).pop() || null;
+  } catch {
+    return null;
+  }
+}
+
 // --- Main loop ---------------------------------------------------------------
 
 async function register() {
   const claude = await fetchClaudeStatus();
-  const res = await api("/agent/register", { method: "POST", body: { name: AGENT_NAME, platform: platform(), version: VERSION, claude } });
+  const codex = (codexCatalog = await fetchCodexModels());
+  const res = await api("/agent/register", { method: "POST", body: { name: AGENT_NAME, platform: platform(), version: VERSION, claude, codex } });
   if (res.ok) {
     const info = await res.json().catch(() => ({}));
     updateAmplifierMcp(info.mcp);
@@ -930,6 +1015,9 @@ async function register() {
     // someone is watching, instead of letting the first session fail obscurely.
     if (claude && claude.tokenSource === "none") {
       console.error("[amplifier-agent] Claude Code is not signed in on this machine — run `claude` and log in, or Claude sessions will fail.");
+    }
+    if (codex) {
+      console.error(`[amplifier-agent] Codex CLI ${codex.version || "(unknown version)"} — reported ${codex.models.length} models to the app`);
     }
   } else {
     console.error(`[amplifier-agent] register failed: HTTP ${res.status}`);
@@ -955,11 +1043,12 @@ async function registerWithRetry() {
   }
 }
 
-// Quietly re-report the Claude Code status so the app's display stays current
-// without needing an agent restart.
+// Quietly re-report the Claude Code status and Codex model catalog so the app's
+// display stays current without needing an agent restart.
 async function refreshStatus() {
   const claude = await fetchClaudeStatus();
-  const res = await api("/agent/register", { method: "POST", body: { name: AGENT_NAME, platform: platform(), version: VERSION, claude } });
+  const codex = (codexCatalog = (await fetchCodexModels()) || codexCatalog);
+  const res = await api("/agent/register", { method: "POST", body: { name: AGENT_NAME, platform: platform(), version: VERSION, claude, codex } });
   if (res.ok) {
     const info = await res.json().catch(() => ({}));
     updateAmplifierMcp(info.mcp);
